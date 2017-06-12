@@ -1,3 +1,4 @@
+import AnimationFrame
 import Array exposing (Array, fromList, map, toList)
 import Html exposing (Html)
 import Svg exposing (Svg, circle, svg)
@@ -6,6 +7,7 @@ import Task
 import Time exposing (Time, millisecond, second)
 import Vector exposing (..)
 
+main : Program Never Model Msg
 main =
   Html.program
     { init = init
@@ -16,17 +18,18 @@ main =
 
 -- MODEL
 
-gravitationalConstant : Float
-gravitationalConstant = 6.674 * (10 ^ -11)
-
 type alias Body =
-  { mass : Float
+  { mass : Float -- Units: m^3 * kg^-1 * s^-2
+  , radius : Float -- Units: m
   , position : Vector
   , velocity : Vector
   }
 
 type alias Model =
-  { time : Time
+  { gravitationalConstant : Float
+  , x : Float
+  , y : Float
+  , time : Time
   , bodies : Array Body
   }
 
@@ -34,10 +37,26 @@ init : (Model, Cmd Msg)
 init =
   let
     model =
-      { time = 0
+      { gravitationalConstant = 6.674 * (10 ^ -11)
+      , x = 100
+      , y = 100
+      , time = 0
       , bodies = fromList
-        [ { mass = 1, position = zero, velocity = zero}
-        , { mass = 1, position = { x = 100, y = 100 }, velocity = zero }
+        [ { mass = 10^13
+          , radius = 3 
+          , position = zero
+          , velocity = zero
+          }
+        , { mass = 10^13
+          , radius = 3
+          , position = { x = 100, y = 0 }
+          , velocity = zero
+          }
+        , { mass = 10^14
+          , radius = 6
+          , position = { x = 50, y = 100 }
+          , velocity = zero
+          }
         ]
       }
   in
@@ -49,21 +68,23 @@ type Msg
   = Start Time
   | Tick Time
 
-simpleAcceleration : Body -> Body -> Vector
-simpleAcceleration on by =
-  if on == by then
-    zero
-  else
-    let
-      distance = subtract on.position by.position
-      normDistance = norm distance
-      scaleFactor = gravitationalConstant * by.mass / (normDistance * normDistance * normDistance)
-    in
-      scale scaleFactor distance
+simpleAcceleration : Model -> Body -> Body -> Vector
+simpleAcceleration model on by =
+  let
+    distance = subtract by.position on.position
+    normDistance = norm distance
+  in
+    if normDistance <= on.radius + by.radius then
+      zero
+    else
+      let
+        scaleFactor = model.gravitationalConstant * by.mass / (normDistance * normDistance * normDistance)
+      in
+        scale scaleFactor distance
 
-acceleration : Array Body -> Body -> Vector
-acceleration bodies on =
-  bodies |> map (simpleAcceleration on) |> sum
+acceleration : Model -> Body -> Vector
+acceleration model on =
+  model.bodies |> map (simpleAcceleration model on) |> sum
 
 applyAcceleration : Float -> Vector -> Vector -> Vector
 applyAcceleration duration accel vel =
@@ -72,22 +93,26 @@ applyAcceleration duration accel vel =
   in
     vel |> add scaledAccel
 
-applyAccelerationAndVelocity : Float -> Vector -> Vector -> Vector -> Vector
-applyAccelerationAndVelocity duration accel vel pos =
+applyAccelerationAndVelocity : Model -> Float -> Vector -> Vector -> Vector -> Vector
+applyAccelerationAndVelocity model duration accel vel pos =
   let
     scaledAccel = scale (duration * duration / 2) accel
     scaledVel = scale duration vel
+    newPos = pos |> add scaledVel |> add scaledAccel
   in
-    pos |> add scaledVel |> add scaledAccel
+    { x = clamp 0 model.x newPos.x
+    , y = clamp 0 model.y newPos.y
+    }
 
-applyTime : Float -> Array Body -> Body -> Body
-applyTime duration bodies body =
+applyTime : Model -> Time  -> Body -> Body
+applyTime model newTime body =
   let
-    accel = acceleration bodies body
+    accel = acceleration model body
+    duration = (newTime - model.time) / second
   in
     { body
     | velocity = applyAcceleration duration accel body.velocity
-    , position = applyAccelerationAndVelocity duration accel body.velocity body.position
+    , position = applyAccelerationAndVelocity model duration accel body.velocity body.position
     }
 
 update : Msg -> Model -> (Model, Cmd Msg)
@@ -99,13 +124,10 @@ update msg model =
         | time = newTime
         }
       Tick newTime ->
-        let
-          secondsElapsed = (newTime - model.time) / second
-          newBodies = model.bodies |> map (applyTime secondsElapsed model.bodies)
-        in
-          { time = newTime
-          , bodies = newBodies
-          }
+        { model
+        | time = newTime
+        , bodies = model.bodies |> map (applyTime model newTime)
+        }
   in
     (newModel, Cmd.none)
 
@@ -113,23 +135,24 @@ update msg model =
 
 subscriptions : Model -> Sub Msg
 subscriptions model =
-    Time.every (100 * millisecond) Tick
+    AnimationFrame.times Tick
 
 -- VIEW
-
-radius : Body -> Float
-radius body = body.mass ^ (1/3)
 
 dot : Body -> Svg Msg
 dot body =
   circle 
     [ Attr.cx <| toString <| body.position.x
     , Attr.cy <| toString <| body.position.y
-    , Attr.r  <| toString <| radius body
+    , Attr.r  <| toString <| body.radius
     ]
     []
 
+viewBox : Model -> Html.Attribute Msg
+viewBox model =
+  Attr.viewBox ("0 0 " ++ (toString model.x) ++ " " ++ (toString model.y))
+
 view : Model -> Html Msg
 view model =
-  svg [ Attr.viewBox "0 0 100 100", Attr.width "300px" ]
+  svg [ viewBox model, Attr.width "300px" ]
     (model.bodies |> map dot |> toList)
